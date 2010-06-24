@@ -21,7 +21,6 @@ src = Source(
         mount="jazz/", ext=".mp3")
 
 try:
-    src.connect()
     src.record(window=6)
 except KeyboardInterrupt:
     pass

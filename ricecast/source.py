@@ -38,18 +38,21 @@ class Source(object):
         self.host   = s.hostname
         self.port   = 80 if s.port is None else s.port
         self.path   = s.path
-        self.sock   = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         self.output_dir = output_dir
         self.ext        = ext
         self.entry_file = entry_file
         self.entry_path = joinpath(output_dir, entry_file)
         self.mount      = mount
-        self.segmenter  = Segmenter(segment_duration * 1000)    # in milliseconds
         self.segment_duration   = segment_duration  # in seconds
+
+        self.first  = 0     # pointers
+        self.last   = 0
 
     def connect(self):
         print 'Connecting <http://%s:%s%s>...' % (self.host, self.port, self.path)
+        self.sock   = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(5) # timeout in 5 secs.
         self.sock.connect((self.host, self.port))
 
         req     = '\r\n'.join([
@@ -99,28 +102,13 @@ class Source(object):
         print 'Type:    %s' % self.type
         print 'Bitrate: %d kbps' % self.bitrate
         print '-'*40
-
         print 'Ready to record.'
-
-        self.entry  = { 
-                'name':             self.name, 
-                'url':              self.url, 
-                'content_type':     self.type,
-                'bitrate':          self.bitrate,
-                'segment_duration': self.segment_duration,
-                'mount':            self.mount,
-                'ext':              self.ext,
-                'started':          False,
-                'stopped':          False,
-                'first':            0,
-                'last':             0 
-        }
 
 
     def segment(self):
         while True:
             data    = self.sock.recv(4096)
-            if data == '':  raise Exception('Source closed.')
+            if data == '':  raise socket.error('Source closed.')
 
             frames  = self.segmenter.feed(data)
             if len(frames) > 0:     # a segment is ready
@@ -134,31 +122,51 @@ class Source(object):
 
 
     def update_entry_file(self, stopped=False):
-        self.entry['stopped']   = stopped
-        open(self.entry_path, 'wb').write(json.dumps(self.entry))
+        entry  = { 
+                'name':             self.name, 
+                'url':              self.url, 
+                'content_type':     self.type,
+                'bitrate':          self.bitrate,
+                'segment_duration': self.segment_duration,
+                'mount':            self.mount,
+                'ext':              self.ext,
+                'started':          True,
+                'stopped':          stopped,
+                'first':            self.first,
+                'last':             self.last
+        }
+
+        open(self.entry_path, 'wb').write(json.dumps(entry))
+
+
+    def prepare_segment(self, window=None):
+        print 'Receiving segment #%d...' % (self.last)
+        data    = self.segment()
+        self.save_segment(data, self.last)
+        if window is not None and (self.last - self.first) >= window:
+            # remove aged file
+            file2remove    = joinpath(self.output_dir, '%d%s' % (self.first, self.ext))
+            os.remove(file2remove)
+            print 'Removed segment', file2remove
+            self.first  = self.last - window + 1     # sliding window forward
+        self.update_entry_file()
+        self.last   += 1
 
 
     def record(self, window=None):
-        self.entry['started']   = True
-        self.cnt = 0
-
         while True:
-            print 'Receiving segment #%d...' % (self.cnt)
-            data    = self.segment()
-            self.save_segment(data, self.cnt)
-            if window is not None and (self.cnt - self.entry['first']) >= window:
-                # remove aged file
-                file2remove    = joinpath(self.output_dir, '%d%s' % (self.entry['first'], self.ext))
-                os.remove(file2remove)
-                print 'Removed segment', file2remove
-                self.entry['first'] = self.cnt - window + 1     # sliding window forward
-            self.entry['last']  = self.cnt
-            self.update_entry_file()
-            self.cnt += 1
+            try:
+                self.connect()
+                self.segmenter  = Segmenter(self.segment_duration * 1000)    # in milliseconds
+                while True:
+                    self.prepare_segment(window)
+            except socket.error:
+                sleep(5)
+                print 'Source closed. Reconnecting in 5 seconds...'
+            finally:
+                self.sock.close()
 
 
     def close(self):
         self.update_entry_file(stopped=True)
-        self.sock.close()
-
 
