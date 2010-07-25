@@ -1,0 +1,6 @@
+Ricecast
+--------
+
+Ricecast consumes a MP3 stream from an Icecast-compatible server and splits the stream into fixed length trunks and updates an entry file for the saved files. 
+
+Currently only CBR MP3 stream is supported. 
